@@ -1,0 +1,285 @@
+<!DOCTYPE HTML> 
+<html lang="en"> 
+<head>
+<title>MP3</title>
+<meta charset="utf-8">
+<style>
+.noselect {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    -khtml-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+}
+
+* {
+    margin:0; 
+    padding:0; 
+}
+
+html, body {
+    width:100%;
+    height:100%;
+}
+
+canvas {
+    display:block;
+}
+
+#rendering {
+    position: fixed;
+    bottom: 0;
+    background-color: rgba(0,0,0,0.8);
+    color: white;
+    padding: 5px;
+}
+</style> 
+</head>
+
+<script id="shader-vs" type="x-shader/x-vertex">
+precision mediump float;
+// Vertex original coordinates (from file)
+attribute vec3 aVertexNormal;
+attribute vec3 aVertexPosition;
+
+// Transformation matrices
+uniform mat4 uMMatrix;
+uniform mat3 uNMatrix;
+uniform mat4 uVMatrix;
+uniform mat4 uPMatrix;
+
+// Vertex after model transformation
+varying vec3 vVertexNormal;
+varying vec3 vVertexPosition;
+
+void main(void) {
+    // This shader was modified to work in world coordinates
+    // Position obtained using model matrix
+    vec4 vertexPos = uMMatrix * vec4(aVertexPosition, 1.0);
+    vVertexPosition = vertexPos.xyz / vertexPos.w;
+
+    // Normal obtained using normal matrix of model transformation
+    vec3 vertexNormal = uNMatrix * aVertexNormal;
+    vVertexNormal = normalize(vertexNormal);
+
+    // Position is projection * view * model
+    gl_Position = uPMatrix * uVMatrix * uMMatrix * vec4(aVertexPosition, 1.0);
+}   
+</script>
+    
+<script id="shader-fs" type="x-shader/x-fragment">
+precision mediump float;
+// Vertex after model transformation
+varying vec3 vVertexNormal;
+varying vec3 vVertexPosition;
+
+// Lighting parameters
+uniform vec3 uLightPosition;
+uniform vec3 uAmbientLightColor;
+uniform vec3 uDiffuseLightColor;
+uniform vec3 uSpecularLightColor;
+uniform vec3 uKAmbient;
+uniform vec3 uKDiffuse;
+uniform vec3 uKSpecular;
+uniform float uShininess;
+
+// Sphere parameters
+const int MAX_SPHERES = 10;
+const float SPHERE_RADIUS = 1.0;
+uniform int numSpheres;
+uniform vec3 spherePos[MAX_SPHERES];
+uniform int sphereType[MAX_SPHERES];
+
+// Eye position
+uniform vec3 eyePos;
+
+// Cubemap texture
+uniform samplerCube uCubeSampler;
+
+// Shader mode (multiple shaders in one)
+uniform int uMode;
+
+// Samples a cube in given direction
+void cubeMap(in vec3 direction, out vec4 outColor) {
+    vec4 color = textureCube(uCubeSampler, normalize(direction));
+    outColor = vec4(color.xyz, 1.0);
+}
+
+// Colors a model various shades depending on normal
+void goofy(in vec3 position, in vec3 normal, out vec4 outColor) {
+    outColor = vec4(sin(normal.x) + cos(normal.y), sin(normal.y) + sin(normal.z), sin(normal.z) + cos(normal.x), 1.0);
+}
+
+// Phong shading with reflective highlights
+void standard(in vec3 position, in vec3 normal, out vec4 outColor) {
+    // Calculate n dot l for diffuse lighting
+    vec3 vectorToLightSource = normalize(uLightPosition - position);
+    float diffuseLightWeightning = max(dot(normal, vectorToLightSource), 0.0);
+
+    // Calculate the reflection vector (r) that is needed for specular light
+    vec3 lightReflectionVector = normalize(reflect(-vectorToLightSource,normal));
+    vec3 viewVectorEye = normalize(eyePos - position);
+    float rdotv = max(dot(lightReflectionVector, viewVectorEye), 0.0);    
+    float specularLightWeightning = pow(rdotv, uShininess);
+
+    // Normal lighting model
+    outColor = vec4(((uAmbientLightColor*uKAmbient)
+                + (uDiffuseLightColor*uKDiffuse) * diffuseLightWeightning
+                + ((uSpecularLightColor*uKSpecular) * specularLightWeightning)),1.0);
+    
+    // Reflection of ray from eye
+    vec3 reflectionVector = normalize(reflect(-viewVectorEye, vVertexNormal));
+
+    // This entire section is a heuristic, and not representative of real lighting
+    // No ordering here because we blend instead
+    for (int i = 0; i < MAX_SPHERES; i++) {
+        // Loop must be constant (i < CONST), so workaround is to break at dynamic size
+        if (i == numSpheres) {break;}
+        // Points from vertex to sphere center
+        vec3 sphereCenterDir = spherePos[i] - vVertexPosition;
+        // Projection of sphereCenterDir onto reflection ray
+        vec3 sphereProjectedOnReflect = vVertexPosition + reflectionVector * dot(sphereCenterDir, reflectionVector);
+        
+        // When distToSphere < 1, sphere obstructs reflection ray
+        float distToSphere = length(spherePos[i] - sphereProjectedOnReflect);
+        // Region of fading out of the reflection
+        float fallOffDist = 1.5;
+    
+        // Radius = 0.5 used due to experimentally nicer blending (smaller radius, bigger falloff)
+        if (dot(sphereCenterDir, reflectionVector) > 0.0 && distToSphere < 0.5 + fallOffDist) {
+            // Distance from incidence point to sphere center projection
+            float distIFromProj = sqrt((0.5 + fallOffDist) * (0.5 + fallOffDist) - distToSphere * distToSphere);
+            // Distance from start of ray to incidence point
+            float distOnLine = length(sphereProjectedOnReflect - vVertexPosition) - distIFromProj;
+            // Intersection point is ray start point plus distance to incidence along ray
+            vec3 intersection = vVertexPosition + reflectionVector * distOnLine;
+            // Normal of a sphere is incidence - sphere center
+            vec3 intersectNormal = normalize(intersection - spherePos[i]);
+            // Color of the reflected point saved in other
+            vec4 other;
+
+            // Render sphere's reflection as the rendering of the sphere's point
+            if (sphereType[i] == 0) {
+                cubeMap(intersectNormal, other);
+            } else {
+                goofy(intersection, intersectNormal, other);
+            }
+
+            // Blend other into output color
+            float blend = 0.1;
+            if (distToSphere > 0.5) {
+                blend -= 0.1 * (distToSphere - 0.5) / fallOffDist;
+            }
+            outColor = vec4(mix(outColor.rgb, other.rgb, blend), 1.0);
+        }
+    }
+}
+
+// Completely reflective shading
+void reflective(out vec4 outColor) {
+    // Normal reflective section (no environment)
+    vec3 viewVectorEye = normalize(eyePos - vVertexPosition);
+    vec3 reflectionVector = normalize(reflect(-viewVectorEye, vVertexNormal));
+    cubeMap(reflectionVector, outColor);
+
+    // Dynamically test spheres for intersection with reflection ray
+    // lastDistance forces closest hit to be shown
+    float lastDistance = 100000.0;
+    for (int i = 0; i < MAX_SPHERES; i++) {
+        // Loop must be constant (i < CONST), so workaround is to break at dynamic size
+        if (i == numSpheres) {break;}
+
+        // Points from vertex to sphere center
+        vec3 sphereCenterDir = spherePos[i] - vVertexPosition;
+        // Projection of sphereCenterDir onto reflection ray
+        vec3 sphereProjectedOnReflect = vVertexPosition + reflectionVector * dot(sphereCenterDir, reflectionVector);
+        
+        // When distToSphere < 1, sphere obstructs reflection ray
+        float distToSphere = length(spherePos[i] - sphereProjectedOnReflect);
+    
+        // If we are on the correct side of reflection ray, and ray inside sphere, continue
+        if (dot(sphereCenterDir, reflectionVector) > 0.0 && distToSphere < SPHERE_RADIUS) {
+            // Distance from incidence point to sphere center projection
+            float distIFromProj = sqrt(SPHERE_RADIUS * SPHERE_RADIUS - distToSphere * distToSphere);
+            // Distance from start of ray to incidence point
+            float distOnLine = length(sphereProjectedOnReflect - vVertexPosition) - distIFromProj;
+
+            // If this hit is closer (maintain ordering)
+            if (distOnLine < lastDistance) {
+                lastDistance = distOnLine;
+                // Intersection point is ray start point plus distance to incidence along ray
+                vec3 intersection = vVertexPosition + reflectionVector * distOnLine;
+                // Normal of a sphere is incidence - sphere center
+                vec3 intersectNormal = normalize(intersection - spherePos[i]);
+
+                // Render sphere's reflection as the rendering of the sphere's point
+                if (sphereType[i] == 0) {
+                    cubeMap(intersectNormal, outColor);
+                } else {
+                    goofy(intersection, intersectNormal, outColor);
+                }
+            }
+        }
+    }
+}
+
+void main(void) {
+    // Combine shaders into one to avoid having to swap
+    // Simplifies code, wouldn't use for a large amount of objects due to branching
+    if (uMode == 0) {
+        standard(vVertexPosition, vVertexNormal, gl_FragColor);
+    } else if (uMode == 1) {
+        cubeMap(vVertexPosition, gl_FragColor);
+    } else if (uMode == 2) {
+        reflective(gl_FragColor);
+    } else {
+        goofy(vVertexPosition, vVertexNormal, gl_FragColor);
+    }
+}
+</script>
+
+<script src="mangled.js"></script> 
+<body onload="startup();" style="border:0; margin: 0;">
+<canvas id="myGLCanvas"></canvas>
+<div id="rendering" class="noselect">
+    <h3>Player Parameters</h3>
+    <input type="radio" name="primitive" id="reflective" id="reflective" value="reflective" checked>
+    <label for="reflective">Reflective</label>
+    <input type="radio" name="primitive" id="solid" id="solid" value="solid">
+    <label for="solid">Solid</label>
+    <br>
+    Sphere orbit offset
+    <br>
+    <input style="width:100%" type="range" min="0" max="100" value="50" class="slider" id="orbitOffset">
+    <br>
+    Sphere orbit speed
+    <br>
+    <input style="width:100%" type="range" min="0" max="100" value="50" class="slider" id="orbitSpeed">
+    <br>
+    E - Add colored sphere
+    <br>
+    R - Add reflective sphere
+    <br>
+    T - Remove sphere
+    <br>
+    WASD - Rotate teapot
+    <br>
+    &larr;&uarr;&darr;&rarr; - Orbit teapot
+    <br>
+    <br>
+    Free camera
+    <br>
+    Space - Toggle
+    <br>
+    WASD &larr;&uarr;&darr;&rarr; - Movement
+    <br>
+    <br>
+    Note:
+    <br>
+    Solid coloring has higlights
+    <br>
+    Spheres reflect each other
+</div>
+</body>
+</html>

@@ -1,0 +1,145 @@
+<!DOCTYPE HTML> 
+<html lang="en"> 
+<head>
+<title>MP4</title>
+<meta charset="utf-8"> 
+<style>
+    .noselect {
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+        -khtml-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        user-select: none;
+    }
+    
+    * {
+        margin:0; 
+        padding:0; 
+    }
+    
+    html, body {
+        width:100%;
+        height:100%;
+    }
+    
+    canvas {
+        display:block;
+    }
+    
+    #rendering {
+        position: fixed;
+        bottom: 0;
+        background-color: rgba(255, 255, 255, 0.8);
+        color: black;
+        padding: 5px;
+    }
+    </style> 
+</head>
+
+    
+<script id="shader-phong-phong-vs" type="x-shader/x-vertex">
+   attribute vec3 aVertexNormal;
+   attribute vec3 aVertexPosition;
+   
+    uniform mat4 uMVMatrix;
+    uniform mat4 uPMatrix;
+    
+    //varying vec4 vColor;
+    varying vec3 vVertexNormal;
+    varying vec4 vVertexPosition;
+
+    void main(void) {
+
+     vVertexPosition = uMVMatrix*vec4(aVertexPosition, 1.0);
+     vVertexNormal = aVertexNormal;
+    
+     gl_Position = uPMatrix*uMVMatrix*vec4(aVertexPosition, 1.0);
+        
+    }   
+</script>
+    
+<script id="shader-phong-phong-fs" type="x-shader/x-fragment">
+    precision mediump float;
+    varying vec3 vVertexNormal;
+    varying vec4 vVertexPosition;
+
+    uniform mat3 uNMatrix;
+    uniform vec3 uLightPosition;
+    uniform vec3 uAmbientLightColor;
+    uniform vec3 uDiffuseLightColor;
+    uniform vec3 uSpecularLightColor;
+    uniform vec3 uAmbientMaterialColor;
+    uniform vec3 uDiffuseMaterialColor;
+    uniform vec3 uSpecularMaterialColor;
+    
+    uniform float uShininess;
+
+    uniform int constColor;
+
+    void main(void) {
+        // Get the vertex position in eye coordinates
+        vec4 vertexPositionEye4 = vVertexPosition;
+        vec3 vertexPositionEye3 = vertexPositionEye4.xyz / vertexPositionEye4.w;
+      
+        // Calculate the vector (l) to the light source
+        vec3 vectorToLightSource = normalize(uLightPosition - vertexPositionEye3);
+        
+        // Transform the normal (n) to eye coordinates
+        vec3 normalEye = normalize(uNMatrix * vVertexNormal);
+        
+        // Calculate n dot l for diffuse lighting
+        float diffuseLightWeightning = max(dot(normalEye, 
+                                        vectorToLightSource), 0.0);
+                                           
+        // Calculate the reflection vector (r) that is needed for specular light
+        vec3 reflectionVector = normalize(reflect(-vectorToLightSource, 
+                                                 normalEye));
+        
+        // The camera in eye coordinates is located in the origin and is pointing
+        // along the negative z-axis. Calculate viewVector (v) 
+        // in eye coordinates as:
+        // (0.0, 0.0, 0.0) - vertexPositionEye3
+        vec3 viewVectorEye = -normalize(vertexPositionEye3);
+        
+        float rdotv = max(dot(reflectionVector, viewVectorEye), 0.0);
+        
+        float specularLightWeightning = pow(rdotv, uShininess);
+
+        // Sum up all three reflection components and send to the fragment shader
+        gl_FragColor = vec4(((uAmbientLightColor*uAmbientMaterialColor)
+                    + (uDiffuseLightColor*uDiffuseMaterialColor) * diffuseLightWeightning
+                    + (uSpecularLightColor*uSpecularMaterialColor) * specularLightWeightning),1.0);
+        
+        if (constColor == 1) {
+            gl_FragColor = vec4(uDiffuseMaterialColor, 1.0);
+        }
+    }
+</script>
+     
+<script src="mangled.js"></script>
+<body onload="startup();" style="border:0; margin: 0;">
+    <canvas id="myGLCanvas"></canvas>
+    <div id="rendering" class="noselect">
+        <h3>Player Parameters</h3>
+        <button onclick="clearSpheres()" style="width:100%; height: 30px">Clear Spheres</button>
+        <br>
+        <br>
+        Drag magnitude
+        <br>
+        <input style="width:100%" type="range" min="0" max="100" value="10" class="slider" id="dragMagnitude">
+        <br>
+        Additional Velocity
+        <br>
+        <input style="width:100%" type="range" min="0" max="100" value="0" class="slider" id="extraVel">
+        <br>
+        <br>
+        E - Add 5 spheres
+        <br>
+        R - Remove 5 spheres
+        <br>
+        <br>
+        WASD &larr;&uarr;&darr;&rarr; - Movement
+    </div>
+    </body>
+</html>
